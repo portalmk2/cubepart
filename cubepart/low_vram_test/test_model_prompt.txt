@@ -1,1 +1,5 @@
-gun barrel,turret,track,wheels,main body
+main body
+turret
+gun barrel
+track
+wheels

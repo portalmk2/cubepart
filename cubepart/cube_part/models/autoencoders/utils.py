@@ -408,14 +408,14 @@ class AutoEncoder(BaseModule):
         has_valid_cache = hasattr(self, "implicit_field_coarse_to_fine_evaluator")
         if has_valid_cache:
             # Check if parameters have changed. If yes, then we have to re-run the setup code.
+            cached = self.implicit_field_coarse_to_fine_evaluator
             has_valid_cache = (
-                fine_grid_resolution
-                == self.implicit_field_coarse_to_fine_evaluator.fine_grid_resolution
+                fine_grid_resolution == cached.fine_grid_resolution
                 and (
-                    bbox_min == self.implicit_field_coarse_to_fine_evaluator.bbox_min
+                    bbox_min == cached.bbox_min.to(bbox_min.device)
                 ).all()
                 and (
-                    bbox_max == self.implicit_field_coarse_to_fine_evaluator.bbox_max
+                    bbox_max == cached.bbox_max.to(bbox_max.device)
                 ).all()
                 and self.coarse_to_fine_precompute_embeddings == precompute_embeddings
                 and self.coarse_to_fine_chunk_size == chunk_size
