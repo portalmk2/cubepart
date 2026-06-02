@@ -378,6 +378,8 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
             return latents
 
         # ---- Phase 3: Decode + extract geometry (shape_model only) ----
+        if self.low_vram:
+            torch.cuda.empty_cache()
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             logging.info("shape decoding: start")
             with timer.benchmark("vq_decode"):

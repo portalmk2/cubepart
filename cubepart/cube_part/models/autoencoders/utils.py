@@ -12,7 +12,13 @@ from torch.nn import functional as F
 from tqdm import tqdm
 
 from cube_part.utils.base import BaseModule
-from cube_part.utils.field import ImplicitFieldCoarseToFineEvaluator
+from cube_part.utils.field import (
+    ImplicitFieldCoarseToFineEvaluator,
+    compute_implicit_grid_and_mask,
+    separable_max_filter,
+    upsample,
+    upsample_binary_mask,
+)
 from cube_part.utils.grid import generate_dense_grid_points
 from cube_part.utils.mesh import marching_cubes_with_warp
 
@@ -489,36 +495,65 @@ class AutoEncoder(BaseModule):
         if hasattr(self.cfg, "logits_scale"):
             tau = tau / self.cfg.logits_scale
 
-        implicit_grids = self.implicit_field_coarse_to_fine_evaluator.evaluate(
-            eval_func_coarse, eval_func_fine, tau=tau
-        )
+        evaluator = self.implicit_field_coarse_to_fine_evaluator
+
+        # Step (b)+(c): Coarse pass for ALL batch at once (shared positions),
+        # then per-part fine evaluation + marching cubes, releasing between parts.
+        coarse_samples = eval_func_coarse(evaluator.coarse_positions_embedded).reshape(
+            -1, *evaluator.coarse_grid_resolution, evaluator.K
+        )  # (B, D_coarse, W_coarse, H_coarse, K)
 
         mesh_v_f = []
         has_surface = np.zeros((batch_size,), dtype=np.bool_)
         for batch_idx in range(batch_size):
             try:
+                # Per-element coarse → implicit grid + refinement mask
+                implicit_grid, mask = compute_implicit_grid_and_mask(
+                    coarse_samples[batch_idx:batch_idx+1], tau, dilate_radius=3
+                )  # (1, D_coarse, W_coarse, H_coarse), (1, D_coarse, W_coarse, H_coarse)
+
+                # Upsample to fine resolution — only (1, R, R, R) at a time
+                implicit_grid = upsample(implicit_grid, evaluator.fine_grid_resolution)
+                mask = upsample_binary_mask(mask, evaluator.fine_grid_resolution)
+
+                eval_mask = separable_max_filter(mask, filter_size=3)
+
+                # Fine evaluation for this element
+                fine_positions_embedded_masked = evaluator.fine_positions_embedded[
+                    eval_mask[0]
+                ].reshape(-1, evaluator.fine_positions_embedded.shape[-1])
+                fine_samples = eval_func_fine(fine_positions_embedded_masked, batch_idx)
+                implicit_grid[0][eval_mask[0]] = fine_samples
+
+                # Clamp borders
+                implicit_grid[:, 0, :, :] = -1
+                implicit_grid[:, -1, :, :] = -1
+                implicit_grid[:, :, 0, :] = -1
+                implicit_grid[:, :, -1, :] = -1
+                implicit_grid[:, :, :, 0] = -1
+                implicit_grid[:, :, :, -1] = -1
+
+                # Marching cubes — move grid to CPU first so warp can
+                # allocate its own buffers without competing for VRAM.
+                grid_np = implicit_grid[0].cpu().numpy()
+                del implicit_grid  # free GPU grid tensor before warp allocates
+                torch.cuda.empty_cache()
                 warp_success = False
-                if use_warp and getattr(self, "training", False) == False:
-                    # make sure we disable warp when training
-                    # since warp can cause memory illegal access and also crash the kernel
-                    # causing the following cuda operations to fail
-                    # it's ok to run this at inference time, since the following operations are not cuda
+                if use_warp and not getattr(self, "training", False):
                     try:
                         vertices, faces = marching_cubes_with_warp(
-                            implicit_grids[batch_idx],
-                            level=0.0,
-                            device=implicit_grids.device,
+                            grid_np, level=0.0, device=device,
                         )
                         warp_success = True
                     except Exception as e:
-                        logging.warning(
-                            f"Warning: error in marching cubes with warp: {e}"
-                        )
-                        warp_success = False  # Fall back to CPU version
+                        logging.warning(f"Warning: error in marching cubes with warp: {e}")
+                        # Warp CUDA errors can leave the device in a bad
+                        # state; clear the PyTorch cache to recover.
+                        torch.cuda.empty_cache()
 
                 if not warp_success:
                     vertices, faces, _, _ = measure.marching_cubes(
-                        implicit_grids[batch_idx].cpu().numpy(), 0, method="lewiner"
+                        grid_np, 0, method="lewiner"
                     )
 
                 bbox_min_np = np.array(bounds[0:3])
@@ -530,10 +565,20 @@ class AutoEncoder(BaseModule):
                     (vertices.astype(np.float32), np.ascontiguousarray(faces))
                 )
                 has_surface[batch_idx] = True
+
+                # Step (c): release per-part GPU tensors immediately
+                del mask, eval_mask, fine_positions_embedded_masked, fine_samples
+                torch.cuda.empty_cache()
+
             except Exception as e:
-                logging.error(f"Error: error in extract_geometry: {e}")
+                logging.error(f"Error in extract_geometry batch {batch_idx}: {e}")
                 mesh_v_f.append((None, None))
                 has_surface[batch_idx] = False
+                torch.cuda.empty_cache()
+
+        # Release coarse batch tensor
+        del coarse_samples
+        torch.cuda.empty_cache()
 
         return mesh_v_f, has_surface
 
