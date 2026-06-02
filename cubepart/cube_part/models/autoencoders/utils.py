@@ -408,14 +408,14 @@ class AutoEncoder(BaseModule):
         has_valid_cache = hasattr(self, "implicit_field_coarse_to_fine_evaluator")
         if has_valid_cache:
             # Check if parameters have changed. If yes, then we have to re-run the setup code.
-            cached = self.implicit_field_coarse_to_fine_evaluator
             has_valid_cache = (
-                fine_grid_resolution == cached.fine_grid_resolution
+                fine_grid_resolution
+                == self.implicit_field_coarse_to_fine_evaluator.fine_grid_resolution
                 and (
-                    bbox_min == cached.bbox_min.to(bbox_min.device)
+                    bbox_min == self.implicit_field_coarse_to_fine_evaluator.bbox_min
                 ).all()
                 and (
-                    bbox_max == cached.bbox_max.to(bbox_max.device)
+                    bbox_max == self.implicit_field_coarse_to_fine_evaluator.bbox_max
                 ).all()
                 and self.coarse_to_fine_precompute_embeddings == precompute_embeddings
                 and self.coarse_to_fine_chunk_size == chunk_size
@@ -579,18 +579,15 @@ class AutoEncoder(BaseModule):
         # Release coarse batch tensor
         del coarse_samples
 
-        # Move evaluator GPU tensor attributes to CPU so they don't leak
-        # when the model is unloaded by _on_device.  Plain tensor attributes
-        # on nn.Module are NOT moved by module.to(device) — only
-        # Parameters and register_buffer'd tensors move.  The evaluator's
-        # fine_positions_embedded (~1.6 GB at base=9) would otherwise
-        # stay on GPU permanently across inference calls, accumulating
-        # across runs with different mesh bounding boxes.
-        for attr in ("fine_positions_embedded", "coarse_positions_embedded",
-                     "bbox_min", "bbox_max"):
-            t = getattr(evaluator, attr, None)
-            if t is not None and t.is_cuda:
-                setattr(evaluator, attr, t.cpu())
+        # Delete the cached evaluator so its large GPU tensors
+        # (fine_positions_embedded ~1.6 GB at base=9,
+        #  coarse_positions_embedded, etc.) are freed immediately.
+        # Moving them to CPU risks device-mismatch on reuse (the model
+        # is unloaded by _on_device but plain tensor attributes are not
+        # restored when the model is re-loaded).  Rebuilding the
+        # evaluator next call is cheap compared to the diffusion loop.
+        if hasattr(self, "implicit_field_coarse_to_fine_evaluator"):
+            del self.implicit_field_coarse_to_fine_evaluator
         torch.cuda.empty_cache()
 
         return mesh_v_f, has_surface
