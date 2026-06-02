@@ -1,5 +1,8 @@
 # CubePart: An Open-Vocabulary Part-Controllable 3D Generator
 
+> **This is a fork of [`Roblox/cube`](https://github.com/Roblox/cube), focused exclusively on CubePart inference.**
+> See [`MODIFICATIONS.md`](MODIFICATIONS.md) for a full list of changes relative to the upstream repo.
+
 <div align="center">
   <a href="https://cubepart.github.io/" target="_blank"><img src="https://img.shields.io/badge/Project-Page-1f6feb.svg" height="22px"></a>
   <a href="https://arxiv.org/abs/2605.28763" target="_blank"><img src="https://img.shields.io/badge/arXiv-2605.28763-b31b1b.svg?logo=arxiv" height="22px"></a>
