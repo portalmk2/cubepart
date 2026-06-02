@@ -1,5 +1,0 @@
-main body
-turret
-gun barrel
-track
-wheels

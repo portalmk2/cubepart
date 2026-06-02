@@ -1,212 +1,186 @@
-# Cube: Generative AI System for 3D
+# CubePart: An Open-Vocabulary Part-Controllable 3D Generator
 
-<p align="center">
-  <img src="./resources/teaser.png" width="800" style="margin: 5px;">
-</p>
-
-
-Foundation models trained on vast amounts of data have demonstrated remarkable reasoning and
-generation capabilities in the domains of text, images, audio and video. Our goal is to build
-such a foundation model for 3D intelligence, a model that can support developers in producing all aspects
-of a Roblox experience, from generating 3D objects and scenes to rigging characters for animation to
-producing programmatic scripts describing object behaviors. As we start open-sourcing a family of models 
-towards this vision, we hope to engage others in the research community to address these goals with us.
-
-## May 2026 Update: CubePart 
-
-<div align="left">
+<div align="center">
   <a href="https://cubepart.github.io/" target="_blank"><img src="https://img.shields.io/badge/Project-Page-1f6feb.svg" height="22px"></a>
   <a href="https://arxiv.org/abs/2605.28763" target="_blank"><img src="https://img.shields.io/badge/arXiv-2605.28763-b31b1b.svg?logo=arxiv" height="22px"></a>
   <a href="https://huggingface.co/Roblox/cubepart" target="_blank"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Models-d96902.svg" height="22px"></a>
   <a href="https://huggingface.co/spaces/Roblox/cubepart-demo" target="_blank"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Demo-blue.svg" height="22px"></a>
 </div>
 
-https://github.com/user-attachments/assets/bafcad1d-6846-4db3-b176-e079e2c84f32
+<br/>
 
-We have released CubePart,  an **open-vocabulary, part-controllable** 3D generator. Given an input mesh and a user-defined parts schema, CubePart synthesizes a set of meshes—one per schema element—that assemble into a coherent object while respecting the
-specified semantic structure. The resulting assets can be directly integrated into game engines and driven by animation, physics, and behavior scripts without manual post-processing.
-
-Check out more details [here](https://github.com/Roblox/cube/tree/main/cubepart)!
-
-## July 2025 Update: Cube 3D v0.5 ✨
-
-<div align="left">
-  <a href=https://corp.roblox.com/newsroom/2025/03/introducing-roblox-cube target="_blank"><img src=https://img.shields.io/badge/Roblox-Blog-000000.svg?logo=Roblox height=22px></a>
-  <a href=https://arxiv.org/abs/2503.15475 target="_blank"><img src=https://img.shields.io/badge/ArXiv-Report-b5212f.svg?logo=arxiv height=22px></a>
-  <a href=https://huggingface.co/Roblox/cube3d-v0.5 target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Models-d96902.svg height=22px></a>
-  <a href=https://huggingface.co/spaces/Roblox/cube3d-interactive target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Demo-blue.svg height=22px></a>
-  <a href=https://colab.research.google.com/drive/1ZvTj49pjDCD_crX5WPZNTAoTTzL6-E5t target="_blank"><img src=https://img.shields.io/badge/Colab-Demo-blue.svg?logo=googlecolab height=22px></a>
-</div>
-
-With the v0.5 model, we introduce two upgrades to the auto-regressive base model for 3D geometry generation from text: *higher fidelity 3D compositions* and *bounding box conditioning*.
-The example gif below shows the model's capacity to generate 3D shapes capturing mixtures of concepts expressed in text, for example *mechanical lobster with mechanical tank treads*. The v0.5 model also shows significantly better text adherence, for example the *lowpoly paper craft victorian rabbit*.  
 <p align="center">
-  <img src="./resources/3d_composition.gif" width="100%" style="margin: 5px;">
+  <img src="examples/assets/teaser.jpg" alt="CubePart teaser" width="800" style="margin: 5px;"/>
 </p>
 
-With bounding box conditioning, we observe novel 3D generations where the model balances between the two conditioning inputs -- text prompt and global aspect ratio. In the gif below, notice how the model creatively interprets the *seashell* or *tall pagoda* prompts into distinct 3D shapes. The model sometimes struggles when the bounding box is too extreme for a given prompt, for example the *cat*, where it can produce disconnected components or generates it along a diagonal to fit the bounding box constraints.
-<p align="center">
-  <img src="./resources/bbox_conditioning.gif" width="100%" style="margin: 5px;">
-</p>
 
-For a technical overview of the methods behind these two improvements, please refer to our latest <a href=https://arxiv.org/abs/2503.15475 target="_blank">v3 report on arXiv</a>. The latest model was trained on an additional ~2.8 million synthetic 3D assets. We introduced several refinements to VQ-VAE architecture and training procedures, and increased the VQ-VAE latent length from 512 to 1024 to increase generation fidelity.
+CubePart is a generative framework for **open-vocabulary, part-controllable** 3D
+mesh generation. Given a global text prompt and a user-defined parts schema
+(an open-ended list of part names), CubePart synthesizes a set of meshes—one
+per schema element—that assemble into a coherent object while respecting the
+specified semantic structure. The resulting assets can be directly integrated
+into game engines and driven by animation, physics, and behavior scripts
+without manual post-processing.
 
-### Try it out on 
-- [Hugging Face Interactive Demo](https://huggingface.co/spaces/Roblox/cube3d-interactive)
-- [Google Colab](https://colab.research.google.com/drive/1ZvTj49pjDCD_crX5WPZNTAoTTzL6-E5t)
+This codebase releases the multi-part mesh decomposition
+model, together with its shape VAE and inference scripts. Given any input
+mesh and a list of part names, it produces the corresponding per-part meshes.
 
-### Updated CLI Inference
-Please follow the [install instructions](#install-requirements) below (from v0.1) to clone and install the repo. The main changes are new model weights, config (under ```./cube3d/config/```) and new args for specifying bounding box. We currently default to the v0.5 config that supports bounding box.
-To generate 3D models using the downloaded models simply run:
-
-```bash
-python -m cube3d.generate \
-            --gpt-ckpt-path model_weights/shape_gpt.safetensors \
-            --shape-ckpt-path model_weights/shape_tokenizer.safetensors \
-            --fast-inference \
-            --prompt "A tall pagoda" \
-            --bounding-box-xyz 1.0 2.0 1.5
-```
-> **Note**: `--fast-inference` is optional and may not be available for all GPU that have limited VRAM. This flag will also not work on MacOS. 
-
-The output will be an `.obj` file saved in the specified `output` directory.
-
-## March 2025 Launch: Cube 3D v0.1
-
-<div align="left">
-  <a href=https://corp.roblox.com/newsroom/2025/03/introducing-roblox-cube target="_blank"><img src=https://img.shields.io/badge/Roblox-Blog-000000.svg?logo=Roblox height=22px></a>
-  <a href=https://arxiv.org/abs/2503.15475 target="_blank"><img src=https://img.shields.io/badge/ArXiv-Report-b5212f.svg?logo=arxiv height=22px></a>
-  <a href=https://huggingface.co/Roblox/cube3d-v0.5 target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Models-d96902.svg height=22px></a>
-  <a href=https://huggingface.co/spaces/Roblox/cube3d-interactive target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Demo-blue.svg height=22px></a>
-  <a href=https://colab.research.google.com/drive/1ZvTj49pjDCD_crX5WPZNTAoTTzL6-E5t target="_blank"><img src=https://img.shields.io/badge/Colab-Demo-blue.svg?logo=googlecolab height=22px></a>
-</div>
-
-Cube 3D is our first step towards 3D intelligence, which involves a shape tokenizer and a text-to-shape generation model. We are unlocking the power of generating 3D assets and enhancing creativity for all artists. Our latest version of Cube 3D is now accessible to individuals, creators, researchers and businesses of all sizes so that they can experiment, innovate and scale their ideas responsibly. This release includes model weights and starting code for using our text-to-shape model to create 3D assets.
-
-### Install Requirements
-
-Clone and install this repo in a virtual environment, via:
+## Installation
 
 ```bash
-git clone https://github.com/Roblox/cube.git
-cd cube
-pip install -e .[meshlab]
+pip install -e .
+# or
+pip install -r requirements.txt
 ```
 
-> **CUDA**: If you are using a Windows machine, you may need to install the [CUDA](https://developer.nvidia.com/cuda-downloads) toolkit as well as `torch` with cuda support via `pip install torch --index-url https://download.pytorch.org/whl/cu124 --force-reinstall`
+## Download model weights
 
-> **MacOS**: Systems with Apple Silicon or AMD GPUs can leverage the Metal Performance Shaders (MPS) backend for PyTorch.
-
-> **Note**: `[meshlab]` is an optional dependency and can be removed by simply running `pip install -e .` for better compatibility but mesh simplification will be disabled.
-
-### Download Models from Huggingface 🤗
-
-Download the model weights from [hugging face](https://huggingface.co/Roblox/cube3d-v0.5) or use the
-`huggingface-cli`:
+The pretrained checkpoints (multi-part DiT + shape VAE) are hosted on the
+Hugging Face Hub at [`Roblox/cubepart`](https://huggingface.co/Roblox/cubepart).
+Download them into a local `weights/` directory:
 
 ```bash
-huggingface-cli download Roblox/cube3d-v0.5 --local-dir ./model_weights
+huggingface-cli download Roblox/cubepart --local-dir weights
 ```
 
-### Inference
+or, equivalently, from Python:
 
-#### 1. Shape Generation
+```python
+from huggingface_hub import snapshot_download
 
-To generate 3D models using the downloaded models simply run:
-
-```bash
-python -m cube3d.generate \
-            --gpt-ckpt-path model_weights/shape_gpt.safetensors \
-            --shape-ckpt-path model_weights/shape_tokenizer.safetensors \
-            --fast-inference \
-            --prompt "Broad-winged flying red dragon, elongated, folded legs."
+snapshot_download(repo_id="Roblox/cubepart", local_dir="weights")
 ```
 
-> **Note**: `--fast-inference` is optional and may not be available for all GPU that have limited VRAM. This flag will also not work on MacOS. 
+This produces:
 
-The output will be an `.obj` file saved in the specified `output` directory.
-
-If you want to render a turntable gif of the mesh, you can use the `--render-gif` flag, which will render a turntable gif of the mesh
-and save it as `turntable.gif` in the specified `output` directory. 
-
-We provide several example output objects and their corresponding text prompts in the `examples` folder.
-
-> **Note**: You must have Blender (version >= 4.3) installed and available in your system's PATH to render the turntable GIF. You can download it from [Blender's official website](https://www.blender.org/). Ensure that the Blender executable is accessible from the command line.
-
-> **Note**: If shape decoding is slow, you can try to specify a lower resolution using the `--resolution-base` flag. A lower resolution will create a coarser and lower quality output mesh but faster decoding. Values between 4.0 and 9.0 are recommended.
-
-#### 2. Shape Tokenization and De-tokenization
-
-To tokenize a 3D shape into token indices and reconstruct it back, you can use the following command:
-
-```bash
-python -m cube3d.vq_vae_encode_decode \
-            --shape-ckpt-path model_weights/shape_tokenizer.safetensors \
-            --mesh-path ./outputs/output.obj
+```
+weights/
+├── multi_part_dit.safetensors    # multi-part DiT (~8.6 GB)
+└── vae.safetensors               # shape VAE (~1.3 GB)
 ```
 
-This will process the `.obj` file located at `./outputs/output.obj` and prints the tokenized representation as well as exports the mesh reconstructed from the token indices.
+All examples below assume this `weights/` layout. If you keep the weights
+elsewhere, pass the corresponding paths via `--checkpoint` / `--vae-checkpoint`.
 
-### Hardware Requirements
+## Quick start
 
-We have tested our model on:
-* Nvidia L40S GPU
-* Nvidia H100 GPU
-* Nvidia A100 GPU
-* Apple Silicon M2-4 Chips.
+### Multi-part decomposition
 
-We recommend using a GPU with at least 24GB of VRAM available when using `--fast-inference` (or `EngineFast`) and 16GB otherwise. 
-
-### Code Usage
-
-We have designed a minimalist API that allows the use this repo as a Python library:
+The parts pipeline takes a pre-encoded shape latent plus a list of part
+names and returns one mesh per part. Use `encode_shape` to obtain the
+latent from an existing mesh.
 
 ```python
 import torch
 import trimesh
-from cube3d.inference.engine import Engine, EngineFast
 
-# load ckpt
-config_path = "cube3d/configs/open_model.yaml"
-gpt_ckpt_path = "model_weights/shape_gpt.safetensors"
-shape_ckpt_path = "model_weights/shape_tokenizer.safetensors"
-engine_fast = EngineFast( # only supported on CUDA devices, replace with Engine otherwise
-    config_path, 
-    gpt_ckpt_path, 
-    shape_ckpt_path, 
-    device=torch.device("cuda"), # Replace with "mps" on Metal-compatible devices
+from cube_part.pipelines import PartShapeDenoiserPipeline, ShapeInput
+from cube_part.utils.mesh import load_mesh, sample_surface
+
+parts_pipe = PartShapeDenoiserPipeline(
+    config_path="configs/shape_denoiser_multimesh.yaml",
+    checkpoint_path="weights/multi_part_dit.safetensors",
+    vae_checkpoint_path="weights/vae.safetensors",
+    extract_geometry_fn_name="extract_geometry_coarse_to_fine",
 )
 
-# inference
-input_prompt = "A pair of noise-canceling headphones"
-# NOTE: Reduce `resolution_base` for faster inference and lower VRAM usage
-# The `top_p` parameter controls randomness between inferences:
-#   Float < 1: Keep smallest set of tokens with cumulative probability ≥ top_p. Default None: deterministic generation.
-mesh_v_f = engine_fast.t2s([input_prompt], use_kv_cache=True, resolution_base=8.0, top_p=0.9)
+mesh, _, _ = load_mesh("examples/inputs/jellyfish_car.glb")
+surface = sample_surface(mesh, num_samples=128_000)
+surface = (
+    torch.from_numpy(surface).to(parts_pipe.device).unsqueeze(0).float()
+)
+latents, _ = parts_pipe.encode_shape(surface)
 
-# save output
-vertices, faces = mesh_v_f[0][0], mesh_v_f[0][1]
-_ = trimesh.Trimesh(vertices=vertices, faces=faces).export("output.obj")
+part_meshes = parts_pipe.input_to_part_shape(
+    ShapeInput(prompt=[["body", "wheels"]], latents=latents),
+    guidance_scale=7.5,
+    num_inference_steps=50,
+)
+
+for i, (vertices, faces) in enumerate(part_meshes):
+    if vertices is not None:
+        trimesh.Trimesh(vertices, faces).export(f"part_{i:02d}.glb")
 ```
 
-## Upcoming Features
-- Texture generation
-- Scene layout generation
+A complete, runnable example lives in [`examples/run_inference.py`](examples/run_inference.py).
+```bash
+export PYTHONPATH=.
 
+python examples/run_inference.py \
+    --config configs/shape_denoiser_multimesh.yaml \
+    --checkpoint weights/multi_part_dit.safetensors \
+    --vae-checkpoint weights/vae.safetensors \
+    --mesh examples/inputs/jellyfish_car.glb \
+    --parts "body, front right wheel, front left wheel, rear right wheel, rear left wheel, exhaust pipe, headlights, gun" \
+    --output outputs/jellyfish_car_parts
+```
+
+> **Notes:** To get optimal results, please follow the guidelines below:
+>
+> 1. The input mesh should be **canonically aligned** (+Y up, +Z forward).
+> 2. A watertight, single-surface mesh is preferred. Meshes with duplicated inner/outer shells (common in some AI-generated meshes) often degrade quality.
+
+### Gradio demo
+
+A small Gradio UI is provided in [`examples/gradio_demo.py`](examples/gradio_demo.py).
+It loads the multi-mesh denoiser once, lets you drag-and-drop a `.glb`, type a
+list of part names, and renders the resulting colored part scene with
+`gr.Model3D`.
+
+```bash
+pip install ".[demo]"   # adds gradio
+python examples/gradio_demo.py \
+    --config configs/shape_denoiser_multimesh.yaml \
+    --checkpoint weights/multi_part_dit.safetensors \
+    --vae-checkpoint weights/vae.safetensors
+```
+
+
+## License
+
+This repo packages and lightly adapts code from the [Qwen-Image](https://github.com/QwenLM/Qwen-Image) and [DINOv2](https://github.com/facebookresearch/dinov2)
+projects (both Apache 2.0). See individual file headers for attribution.
+
+The cubepart-specific code is released under the same license as [Cube](https://github.com/Roblox/cube), see
+[`LICENSE`](https://github.com/Roblox/cube/tree/main?tab=License-1-ov-file).
 
 ## Citation
-If you find this work helpful, please consider citing our technical report:
+
+If you find this work helpful, please consider citing our paper:
 
 ```bibtex
-@article{roblox2025cube,
-    title   = {Cube: A Roblox View of 3D Intelligence},
-    author  = {Roblox, Foundation AI Team},
-    journal = {arXiv preprint arXiv:2503.15475},
-    year    = {2025}
+@inproceedings{zhu2026cubepart,
+  author    = {Zhu, Yiheng and Deng, Kangle and Fauconnier, Jean-Philippe
+               and Navarro, Inaki and Li, Daiqing and Pun, Ava
+               and Zhang, Yinan and Zhuang, Peiye and Sun, Xiaoxia
+               and Agrawala, Maneesh and Bhat, Kiran and Zhou, Tinghui},
+  title     = {CubePart: An Open-Vocabulary Part-Controllable 3D Generator},
+  booktitle = {SIGGRAPH},
+  year      = {2026},
 }
 ```
 
-## Acknowledgements
+## Acknowledgments
 
-We would like to thank the contributors of [TRELLIS](https://github.com/microsoft/TRELLIS), [CraftsMan3D](https://github.com/wyysf-98/CraftsMan3D), [threestudio](https://github.com/threestudio-project/threestudio), [Hunyuan3D-2](https://github.com/Tencent/Hunyuan3D-2), [minGPT](https://github.com/karpathy/minGPT), [dinov2](https://github.com/facebookresearch/dinov2), [OptVQ](https://github.com/zbr17/OptVQ), [1d-tokenizer](https://github.com/bytedance/1d-tokenizer)
-repositories, for their open source contributions.
+We thank the leadership, Nishchaie Khanna, Karun Channa, Anupam Singh, and
+David Baszucki, for their support and guidance throughout this work. We also
+thank Michael Palleschi, Maurice Chu, Keenan Crane, and Kayvon Fatahalian for
+helpful discussions. We are grateful to Zhenyu Zhao, Daniel Chin, Michael
+Spedden, Alvin Chan, and Saurav Dhakad for setting up the evaluation pipeline
+as part of the broader project. Finally, we are thankful to the ML-Platform
+team, Anying Li, Yiqing Wang, Steve Han, Sourashis Roy, Chengyi Nie, Wei Zeng,
+Sal Pathare, Mandar Deshpande, and Andy Shen, for their contributions and
+collaboration that helped make this project possible.
+
+CubePart builds on a number of excellent open-source projects. We thank the
+contributors of [Cube](https://github.com/Roblox/cube),
+[Qwen-Image](https://github.com/QwenLM/Qwen-Image),
+[DINOv2](https://github.com/facebookresearch/dinov2),
+[diffusers](https://github.com/huggingface/diffusers),
+[transformers](https://github.com/huggingface/transformers),
+[TRELLIS](https://github.com/microsoft/TRELLIS),
+[CraftsMan3D](https://github.com/wyysf-98/CraftsMan3D),
+[Hunyuan3D-2](https://github.com/Tencent/Hunyuan3D-2),
+[PartCrafter](https://github.com/wgsxm/PartCrafter)
+for their open-source contributions.
