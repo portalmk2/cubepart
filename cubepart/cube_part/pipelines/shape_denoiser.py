@@ -1,10 +1,12 @@
 import logging
 import math
+from contextlib import nullcontext
 from typing import Optional, Union
 
 import torch
 
 import numpy as np
+import torch.nn as nn
 
 from diffusers import (
     DPMSolverMultistepScheduler,
@@ -19,6 +21,7 @@ from tqdm import tqdm
 from cube_part.pipelines.base import ShapeInput
 from cube_part.systems.shape_denoiser import ShapeDenoiserSystem
 from cube_part.utils.config import load_config
+from cube_part.utils.gpu_manager import on_device
 from cube_part.utils.runtime import Benchmarker
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,7 @@ class ShapeDenoiserPipeline:  # to be closer to diffusers
         vae_checkpoint_path: Optional[str] = None,
         device: Optional[Union[torch.device, str, int]] = None,
         extract_geometry_fn_name: str = "extract_geometry_naive",
+        low_vram: bool = False,
     ) -> None:
         """
         Initialize the ShapeDenoiserPipeline.
@@ -49,6 +53,8 @@ class ShapeDenoiserPipeline:  # to be closer to diffusers
                 config.
             device (Optional[Union[torch.device, str, int]]): Device to use for inference.
             extract_geometry_fn_name (str): Name of the function to use for geometry extraction.
+            low_vram (bool): If True, keep models on CPU and load/unload to
+                GPU on demand during inference to reduce peak VRAM.
         """
 
         if device is None:
@@ -69,7 +75,21 @@ class ShapeDenoiserPipeline:  # to be closer to diffusers
         config.system.attn_implementation = "sdpa"
         config.system.gradient_checkpointing = False
 
-        system = ShapeDenoiserSystem(config.system).eval().to(device)
+        system = ShapeDenoiserSystem(config.system).eval()
+
+        if low_vram:
+            # Keep everything on CPU; on_device() will swap per-phase.
+            system = system.cpu()
+            logging.info("low_vram=True: models start on CPU, will swap to GPU per phase.")
+            # torch.compile caches compiled graphs keyed on (code, device).
+            # When models are moved between CPU and GPU between calls the
+            # cached graph becomes invalid and Dynamo raises errors.  Set
+            # the global dynamo disable flag so *all* @torch.compile
+            # annotations in the system (diffusion model, VAE, norm layers)
+            # fall back to eager execution.
+            torch._dynamo.config.disable = True
+        else:
+            system = system.to(device)
 
         torch.set_grad_enabled(False)
 
@@ -77,39 +97,66 @@ class ShapeDenoiserPipeline:  # to be closer to diffusers
         self.device = torch.device(device)
         self.cfg = config
         self.extract_geometry_fn_name = extract_geometry_fn_name
+        self.low_vram = low_vram
+
+        # Detach tiny normalization params so they are not tied to the
+        # system's device.  In low_vram mode the system lives on CPU but
+        # these are needed on GPU alongside latents.
+        self._shape_model_shift = system.shape_model_shift.data.clone().to(device)
+        self._shape_model_scale = system.shape_model_scale.data.clone().to(device)
+
+    def _on_device(self, module: nn.Module):
+        """Return a context manager that loads *module* to GPU for the
+        duration of the block (and unloads afterwards) when ``low_vram``
+        is enabled.  Otherwise a no-op.
+        """
+        if self.low_vram:
+            return on_device(module, self.device)
+        return nullcontext(module)
+
+    def _normalize_vae_latents(self, latents):
+        return latents * self._shape_model_scale.to(latents.device) + self._shape_model_shift.to(latents.device)
+
+    def _unnormalize_vae_latents(self, latents):
+        return (latents - self._shape_model_shift.to(latents.device)) / self._shape_model_scale.to(latents.device)
 
     @torch.no_grad()
     def encode_shape(self, surface: torch.Tensor, return_mesh: bool = False):
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            _, z, _, result_dict = self.system.shape_model.encode(surface)
-            if return_mesh:
-                latents = self.system.shape_model.decode(z)
-                mesh_v_f, _ = self.system.shape_model.extract_geometry(
-                    latents, chunk_size=100_000, use_warp=True
-                )
-            else:
-                mesh_v_f = None
+        with self._on_device(self.system.shape_model):
+            surface = surface.to(self.device)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                _, z, _, result_dict = self.system.shape_model.encode(surface)
+                if return_mesh:
+                    latents = self.system.shape_model.decode(z)
+                    mesh_v_f, _ = self.system.shape_model.extract_geometry(
+                        latents, chunk_size=100_000, use_warp=True
+                    )
+                else:
+                    mesh_v_f = None
 
-            return result_dict["z"], mesh_v_f
+                return result_dict["z"], mesh_v_f
 
     @torch.no_grad()
     def decode_shape(
         self, shape_ids, resolution_base: float = 8.0, chunk_size: int = 100_000
     ):
-        with torch.autocast(self.device.type, dtype=torch.bfloat16):
-            # vq-vae
-            latents = self.system.shape_model.decode(
-                self.system.shape_model.bottleneck.block.c_out(shape_ids)
-            )
-            bounds = 1.0 + 1.0 / (2 * 2**resolution_base)
-            meshes, _ = self.system.shape_model.extract_geometry(
-                latents,
-                resolution_base=resolution_base,
-                chunk_size=chunk_size,
-                use_warp=True,
-                bounds=bounds,
-                fn_name=self.extract_geometry_fn_name,
-            )
+        if self.low_vram:
+            shape_ids = shape_ids.to(self.device)
+        with self._on_device(self.system.shape_model):
+            with torch.autocast(self.device.type, dtype=torch.bfloat16):
+                # vq-vae
+                latents = self.system.shape_model.decode(
+                    self.system.shape_model.bottleneck.block.c_out(shape_ids)
+                )
+                bounds = 1.0 + 1.0 / (2 * 2**resolution_base)
+                meshes, _ = self.system.shape_model.extract_geometry(
+                    latents,
+                    resolution_base=resolution_base,
+                    chunk_size=chunk_size,
+                    use_warp=True,
+                    bounds=bounds,
+                    fn_name=self.extract_geometry_fn_name,
+                )
         return meshes
 
     def prepare_latents(self, batch_size: int, num_latents: int, seed=None):
@@ -215,7 +262,7 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
 
         latents = self.prepare_latents(batch_size * num_parts, num_latents, seed=seed)
         latents = latents.unflatten(0, (batch_size, num_parts))  # [b, f, l, d]
-        input_latents = self.system._normalize_vae_latents(
+        input_latents = self._normalize_vae_latents(
             shape_input.latents
         ).unsqueeze_(1)
         img_shapes = [
@@ -233,10 +280,13 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
                 uncond_input_latents = input_latents
             input_latents = torch.cat([input_latents, uncond_input_latents], dim=0)
 
-        # get text embed
-        encoder_hidden_states, encoder_attention_mask = self.system.base_model(prompts)
+        # ---- Phase 1: Text encoding (base_model only) ----
+        with self._on_device(self.system.base_model):
+            encoder_hidden_states, encoder_attention_mask = self.system.base_model(
+                prompts
+            )
 
-        # prepare timesteps
+        # prepare timesteps (no GPU model needed)
         noise_scheduler = self.prepare_noise_scheduler(
             scheduler_type, timeshift=timeshift
         )
@@ -245,65 +295,80 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
             noise_scheduler, num_inference_steps, device=self.device, sigmas=sigmas
         )
 
-        # generation loop
-        noise_scheduler.set_begin_index(0)
-        for _, t in enumerate(tqdm(timesteps)):
-            # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-            timestep = t.expand(encoder_hidden_states.shape[0]).to(latents.dtype)
+        # ---- Phase 2: Diffusion loop (diffusion_model only) ----
+        # Move latents and text embeddings to GPU for the loop.
+        if self.low_vram:
+            latents = latents.to(self.device)
+            input_latents = input_latents.to(self.device)
+            encoder_hidden_states = encoder_hidden_states.to(self.device)
+            encoder_attention_mask = encoder_attention_mask.to(self.device)
 
-            with torch.autocast(self.device.type, dtype=torch.bfloat16):
-                model_pred = self.system._forward_diffusion_model(
-                    torch.cat([latents, input_latents], dim=1).flatten(
-                        0, 1
-                    ),  # [b, f+1, l, d] -> [b*(f+1), l, d]
-                    timestep=timestep,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=encoder_attention_mask,
-                    img_shapes=img_shapes,
-                    attention_kwargs=attention_kwargs,
-                ).to(latents.dtype)
-            # throw away conditions
-            model_pred = model_pred.unflatten(0, (latents.shape[0], -1))[:, :-1]
+        with self._on_device(self.system.diffusion_model):
+            # generation loop
+            noise_scheduler.set_begin_index(0)
+            for _, t in enumerate(tqdm(timesteps)):
+                # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+                timestep = t.expand(encoder_hidden_states.shape[0]).to(latents.dtype)
 
-            # convert to velocity
-            model_pred = (latents - model_pred) / (
-                t / noise_scheduler.config.num_train_timesteps
-            ).clamp_min(self.system.cfg.timestep_eps)
+                with torch.autocast(self.device.type, dtype=torch.bfloat16):
+                    model_pred = self.system._forward_diffusion_model(
+                        torch.cat([latents, input_latents], dim=1).flatten(
+                            0, 1
+                        ),  # [b, f+1, l, d] -> [b*(f+1), l, d]
+                        timestep=timestep,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_attention_mask=encoder_attention_mask,
+                        img_shapes=img_shapes,
+                        attention_kwargs=attention_kwargs,
+                    ).to(latents.dtype)
+                # throw away conditions
+                model_pred = model_pred.unflatten(0, (latents.shape[0], -1))[:, :-1]
 
-            if guidance_scale > 0.0:
-                # gamma = guidance_scale * guidance_schedule(
-                #     t / noise_scheduler.config.num_train_timesteps
-                # )
-                gamma = guidance_scale
+                # convert to velocity
+                model_pred = (latents - model_pred) / (
+                    t / noise_scheduler.config.num_train_timesteps
+                ).clamp_min(self.system.cfg.timestep_eps)
 
-                # do cfg
-                latents, _ = latents.chunk(2, dim=0)
-                cond_pred, uncond_pred = model_pred.chunk(2, dim=0)
-                comb_pred = uncond_pred + gamma * (cond_pred - uncond_pred)
+                if guidance_scale > 0.0:
+                    # gamma = guidance_scale * guidance_schedule(
+                    #     t / noise_scheduler.config.num_train_timesteps
+                    # )
+                    gamma = guidance_scale
 
-                # naive path
-                model_pred = comb_pred
+                    # do cfg
+                    latents, _ = latents.chunk(2, dim=0)
+                    cond_pred, uncond_pred = model_pred.chunk(2, dim=0)
+                    comb_pred = uncond_pred + gamma * (cond_pred - uncond_pred)
 
-                latents = noise_scheduler.step(
-                    model_pred.flatten(0, 1),
-                    t,
-                    latents.flatten(0, 1),
-                    return_dict=False,
-                )[0].unflatten(0, (-1, num_parts))
-                latents = torch.cat([latents, latents], dim=0)
-            else:
-                latents = noise_scheduler.step(
-                    model_pred.flatten(0, 1),
-                    t,
-                    latents.flatten(0, 1),
-                    return_dict=False,
-                )[0].unflatten(0, (-1, num_parts))
+                    # naive path
+                    model_pred = comb_pred
+
+                    latents = noise_scheduler.step(
+                        model_pred.flatten(0, 1),
+                        t,
+                        latents.flatten(0, 1),
+                        return_dict=False,
+                    )[0].unflatten(0, (-1, num_parts))
+                    latents = torch.cat([latents, latents], dim=0)
+                else:
+                    latents = noise_scheduler.step(
+                        model_pred.flatten(0, 1),
+                        t,
+                        latents.flatten(0, 1),
+                        return_dict=False,
+                    )[0].unflatten(0, (-1, num_parts))
+
+        # Move latents back to CPU after diffusion phase (decode_shape will
+        # move its own data to GPU via the shape_model's _on_device).
+        if self.low_vram:
+            latents = latents.cpu()
+            sample_mask = sample_mask.cpu()
 
         if guidance_scale > 0.0:
             latents, _ = latents.chunk(2, dim=0)
 
         # resume original scaling
-        latents = self.system._unnormalize_vae_latents(
+        latents = self._unnormalize_vae_latents(
             latents.view(-1, *latents.shape[-2:])
         )
         sample_mask = sample_mask[:, :-1].flatten().view(-1, 1, 1).expand_as(latents)
@@ -312,6 +377,7 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
         if not output_mesh:
             return latents
 
+        # ---- Phase 3: Decode + extract geometry (shape_model only) ----
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             logging.info("shape decoding: start")
             with timer.benchmark("vq_decode"):

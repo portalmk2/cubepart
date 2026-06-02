@@ -260,6 +260,22 @@ def parse_args() -> argparse.Namespace:
             "Pass an empty string to disable thumbnails."
         ),
     )
+    parser.add_argument(
+        "--low-vram",
+        action="store_true",
+        default=True,
+        help=(
+            "Keep models on CPU and load/unload to GPU per inference phase. "
+            "Enabled by default to reduce peak VRAM. Use --no-low-vram to "
+            "keep all models resident on GPU."
+        ),
+    )
+    parser.add_argument(
+        "--no-low-vram",
+        dest="low_vram",
+        action="store_false",
+        help="Keep all models on GPU (higher VRAM usage but faster per request).",
+    )
     return parser.parse_args()
 
 
@@ -876,8 +892,9 @@ def main() -> None:
         vae_checkpoint_path=vae_checkpoint_path,
         device=args.device,
         extract_geometry_fn_name="extract_geometry_coarse_to_fine",
+        low_vram=args.low_vram,
     )
-    print("Pipeline ready.")
+    print(f"Pipeline ready (low_vram={args.low_vram}).")
 
     examples = _load_examples(
         args.examples_json or None,

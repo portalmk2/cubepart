@@ -17,9 +17,10 @@ from cube_part.models.transformers.gated_attention import QwenGatedTransformerBl
 from .utils import _basic_init, _embed_init, _zero_init, replace_norm_with_fp32
 
 
-# This function wraps the transformer blocks to enable torch.compile.
-@torch.compile(fullgraph=True)
-def _hijack_forward_compiled(
+# This function wraps the transformer blocks for eager execution.
+# The identical logic with @torch.compile(fullgraph=True) lives in
+# ``_hijack_forward_compiled`` below.
+def _hijack_forward_eager(
     model,
     hidden_states,
     encoder_hidden_states,
@@ -60,7 +61,6 @@ def _hijack_forward_compiled(
                 temb,
                 trunc_image_rotary_emb,
             )
-
         else:
             encoder_hidden_states, hidden_states = block(
                 hidden_states=hidden_states,
@@ -82,6 +82,28 @@ def _hijack_forward_compiled(
     output = output + encoder_hidden_states.mean() * 0.0
 
     return output
+
+
+# This function wraps the transformer blocks to enable torch.compile.
+@torch.compile(fullgraph=True)
+def _hijack_forward_compiled(
+    model,
+    hidden_states,
+    encoder_hidden_states,
+    encoder_hidden_states_mask,
+    temb,
+    image_rotary_emb,
+    attention_kwargs,
+):
+    return _hijack_forward_eager(
+        model,
+        hidden_states,
+        encoder_hidden_states,
+        encoder_hidden_states_mask,
+        temb,
+        image_rotary_emb,
+        attention_kwargs,
+    )
 
 
 # See the original implementation: https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/transformers/transformer_qwenimage.py#L832
@@ -148,7 +170,12 @@ def hijack_forward(
     else:
         image_rotary_emb = None
 
-    output = _hijack_forward_compiled(
+    _forward_fn = (
+        _hijack_forward_eager
+        if getattr(self, "_skip_compile", False)
+        else _hijack_forward_compiled
+    )
+    output = _forward_fn(
         self,
         hidden_states=hidden_states,
         encoder_hidden_states=encoder_hidden_states,
