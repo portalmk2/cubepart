@@ -393,6 +393,12 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
             )
             latents, _ = pipe.encode_shape(surface)
 
+            # Free the surface tensor — encode_shape is done and it lives
+            # on GPU.  Without this the ~0.5 MB stays until Python GC
+            # collects it, which may be delayed inside a long-lived
+            # Gradio process.
+            del surface
+
             part_meshes = pipe.input_to_part_shape(
                 ShapeInput(prompt=[parts], latents=latents),
                 guidance_scale=float(guidance_scale),
@@ -403,6 +409,13 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
                 timeshift=4.0,
                 scheduler_type="dpm_solver"
             )
+
+            # Release GPU-side inference intermediates that may not have
+            # been freed by the pipeline's own cleanup (e.g. latents that
+            # were moved to GPU inside the diffusion loop).
+            del latents
+            if pipe.low_vram:
+                torch.cuda.empty_cache()
 
             palette = _palette(len(parts))
             scene = trimesh.Scene()
@@ -428,6 +441,10 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
             out_path = _scene_to_glb(scene)
             return out_path, _legend_html(parts, palette, kept_mask)
         except Exception:
+            # On error, aggressively clear any leftover GPU state so the
+            # next request starts from a clean slate.
+            if pipe.low_vram:
+                torch.cuda.empty_cache()
             return None, _message_html(
                 "<pre style='white-space:pre-wrap;'>"
                 f"Inference failed:\n{traceback.format_exc()}"

@@ -578,6 +578,19 @@ class AutoEncoder(BaseModule):
 
         # Release coarse batch tensor
         del coarse_samples
+
+        # Move evaluator GPU tensor attributes to CPU so they don't leak
+        # when the model is unloaded by _on_device.  Plain tensor attributes
+        # on nn.Module are NOT moved by module.to(device) — only
+        # Parameters and register_buffer'd tensors move.  The evaluator's
+        # fine_positions_embedded (~1.6 GB at base=9) would otherwise
+        # stay on GPU permanently across inference calls, accumulating
+        # across runs with different mesh bounding boxes.
+        for attr in ("fine_positions_embedded", "coarse_positions_embedded",
+                     "bbox_min", "bbox_max"):
+            t = getattr(evaluator, attr, None)
+            if t is not None and t.is_cuda:
+                setattr(evaluator, attr, t.cpu())
         torch.cuda.empty_cache()
 
         return mesh_v_f, has_surface

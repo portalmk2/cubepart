@@ -157,6 +157,11 @@ class ShapeDenoiserPipeline:  # to be closer to diffusers
                     bounds=bounds,
                     fn_name=self.extract_geometry_fn_name,
                 )
+        # shape_ids was moved to GPU in low_vram mode; free it now that
+        # decode + extract are done so the VRAM is available for the next
+        # request.
+        if self.low_vram:
+            del shape_ids
         return meshes
 
     def prepare_latents(self, batch_size: int, num_latents: int, seed=None):
@@ -363,6 +368,12 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
         if self.low_vram:
             latents = latents.cpu()
             sample_mask = sample_mask.cpu()
+            # Also release text-encoder intermediates that were moved to
+            # GPU for the diffusion loop.  Without explicit del these
+            # stay alive until Python GC runs, which may be delayed in a
+            # long-lived Gradio process, fragmenting VRAM across requests.
+            del encoder_hidden_states, encoder_attention_mask
+            torch.cuda.empty_cache()
 
         if guidance_scale > 0.0:
             latents, _ = latents.chunk(2, dim=0)
