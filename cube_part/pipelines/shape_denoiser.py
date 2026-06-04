@@ -286,6 +286,7 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
             input_latents = torch.cat([input_latents, uncond_input_latents], dim=0)
 
         # ---- Phase 1: Text encoding (base_model only) ----
+        print("  [Phase 1] Encoding text prompts ...")
         with self._on_device(self.system.base_model):
             encoder_hidden_states, encoder_attention_mask = self.system.base_model(
                 prompts
@@ -302,6 +303,7 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
 
         # ---- Phase 2: Diffusion loop (diffusion_model only) ----
         # Move latents and text embeddings to GPU for the loop.
+        print(f"  [Phase 2] Diffusion loop ({num_inference_steps} steps, scheduler={scheduler_type}) ...")
         if self.low_vram:
             latents = latents.to(self.device)
             input_latents = input_latents.to(self.device)
@@ -311,7 +313,7 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
         with self._on_device(self.system.diffusion_model):
             # generation loop
             noise_scheduler.set_begin_index(0)
-            for _, t in enumerate(tqdm(timesteps)):
+            for _, t in enumerate(tqdm(timesteps, desc="  [Phase 2] Denoising")):
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(encoder_hidden_states.shape[0]).to(latents.dtype)
 
@@ -365,6 +367,7 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
 
         # Move latents back to CPU after diffusion phase (decode_shape will
         # move its own data to GPU via the shape_model's _on_device).
+        print("  [Phase 2] Diffusion loop done.")
         if self.low_vram:
             latents = latents.cpu()
             sample_mask = sample_mask.cpu()
@@ -389,17 +392,17 @@ class PartShapeDenoiserPipeline(ShapeDenoiserPipeline):
             return latents
 
         # ---- Phase 3: Decode + extract geometry (shape_model only) ----
+        print(f"  [Phase 3] Decoding shapes + extracting geometry (res_base={resolution_base}, chunk={chunk_size}) ...")
         if self.low_vram:
             torch.cuda.empty_cache()
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
-            logging.info("shape decoding: start")
             with timer.benchmark("vq_decode"):
                 mesh = self.decode_shape(
                     latents.float(),
                     resolution_base=resolution_base,
                     chunk_size=chunk_size,
                 )
-                logging.info("shape decoding: done")
+        print(f"  [Phase 3] Decode done.")
 
         if output_hidden_states:
             return mesh, latents

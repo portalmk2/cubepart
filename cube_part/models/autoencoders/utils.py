@@ -505,6 +505,7 @@ class AutoEncoder(BaseModule):
 
         mesh_v_f = []
         has_surface = np.zeros((batch_size,), dtype=np.bool_)
+        print(f"    Coarse pass done. Processing {batch_size} part(s) for fine evaluation + marching cubes ...")
         for batch_idx in range(batch_size):
             try:
                 # Per-element coarse → implicit grid + refinement mask
@@ -565,6 +566,7 @@ class AutoEncoder(BaseModule):
                     (vertices.astype(np.float32), np.ascontiguousarray(faces))
                 )
                 has_surface[batch_idx] = True
+                print(f"    Part {batch_idx}: {vertices.shape[0]} vertices, {faces.shape[0]} faces")
 
                 # Step (c): release per-part GPU tensors immediately
                 del mask, eval_mask, fine_positions_embedded_masked, fine_samples

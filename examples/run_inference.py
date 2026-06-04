@@ -104,15 +104,29 @@ def main() -> None:
         extract_geometry_fn_name="extract_geometry_coarse_to_fine",
     )
 
+    parts = args.parts
+    print(f"[{len(parts)} parts] Loading mesh: {args.mesh}")
     mesh, _, _ = load_mesh(args.mesh)
+    print(f"[{len(parts)} parts] Mesh loaded ({len(mesh.vertices)} vertices, {len(mesh.faces)} faces).")
+
+    print(f"[{len(parts)} parts] Sampling surface ({args.num_samples} points) ...")
     surface = sample_surface(mesh, num_samples=args.num_samples)
     surface = (
         torch.from_numpy(surface).to(pipe.device).unsqueeze(0).float()
     )
+    print(f"[{len(parts)} parts] Surface sampled: {surface.shape}.")
+
+    print(f"[{len(parts)} parts] Encoding shape (VAE) ...")
     latents, _ = pipe.encode_shape(surface)
+    print(f"[{len(parts)} parts] Encoding done. Latent shape: {latents.shape}.")
 
     os.makedirs(args.output, exist_ok=True)
 
+    print(
+        f"[{len(parts)} parts] Starting diffusion + decode "
+        f"(guidance={args.guidance_scale}, steps={args.num_inference_steps}, "
+        f"resolution_base={args.resolution_base}) ..."
+    )
     part_meshes = pipe.input_to_part_shape(
         ShapeInput(prompt=[args.parts], latents=latents),
         guidance_scale=args.guidance_scale,
@@ -123,6 +137,7 @@ def main() -> None:
         seed=args.seed,
         output_mesh=True
     )
+    print(f"[{len(parts)} parts] Diffusion + decode done. Got {len(part_meshes)} part meshes.")
 
     palette = _palette(len(args.parts))
     scene = trimesh.Scene()

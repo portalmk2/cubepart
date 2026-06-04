@@ -376,3 +376,4 @@ venv/
 low_vram_test/
 build/
 .hermes/
+gradio.sh

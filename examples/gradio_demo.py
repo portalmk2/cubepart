@@ -382,8 +382,12 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
             )
 
         try:
+            print(f"[{len(parts)} parts] Loading mesh: {mesh_path}")
             mesh, _, _ = load_mesh(mesh_path)
+            print(f"[{len(parts)} parts] Mesh loaded ({len(mesh.vertices)} vertices, {len(mesh.faces)} faces).")
+
             _seed_everything(int(seed))
+            print(f"[{len(parts)} parts] Sampling surface ({num_samples} points) ...")
             surface = sample_surface(mesh, num_samples=int(num_samples))
             surface = (
                 torch.from_numpy(surface)
@@ -391,14 +395,23 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
                 .unsqueeze(0)
                 .float()
             )
+            print(f"[{len(parts)} parts] Surface sampled: {surface.shape}.")
+
+            print(f"[{len(parts)} parts] Encoding shape (VAE) ...")
             latents, _ = pipe.encode_shape(surface)
+            print(f"[{len(parts)} parts] Encoding done. Latent shape: {latents.shape}.")
 
             # Free the surface tensor — encode_shape is done and it lives
             # on GPU.  Without this the ~0.5 MB stays until Python GC
-            # collects it, which may be delayed inside a long-lived
+            # collects it, which may be delayed in a long-lived
             # Gradio process.
             del surface
 
+            print(
+                f"[{len(parts)} parts] Starting diffusion + decode "
+                f"(guidance={guidance_scale}, steps={num_inference_steps}, "
+                f"resolution_base={resolution_base}, chunk_size={chunk_size}) ..."
+            )
             part_meshes = pipe.input_to_part_shape(
                 ShapeInput(prompt=[parts], latents=latents),
                 guidance_scale=float(guidance_scale),
@@ -409,6 +422,7 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
                 timeshift=4.0,
                 scheduler_type="dpm_solver"
             )
+            print(f"[{len(parts)} parts] Diffusion + decode done. Got {len(part_meshes)} part meshes.")
 
             # Release GPU-side inference intermediates that may not have
             # been freed by the pipeline's own cleanup (e.g. latents that
@@ -420,6 +434,7 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
             palette = _palette(len(parts))
             scene = trimesh.Scene()
             kept_mask: List[bool] = []
+            print(f"[{len(parts)} parts] Assembling scene ...")
             for i, (vertices, faces) in enumerate(part_meshes):
                 name = parts[i] if i < len(parts) else f"part_{i}"
                 if (
@@ -432,13 +447,16 @@ def _build_runner(pipe: PartShapeDenoiserPipeline):
                     submesh.visual.face_colors = palette[i % len(palette)]
                     scene.add_geometry(submesh, geom_name=f"part_{i}_{name}")
                     kept_mask.append(True)
+                    print(f"  Part {i} ({name}): {vertices.shape[0]} verts, {faces.shape[0]} faces")
                 else:
                     kept_mask.append(False)
+                    print(f"  Part {i} ({name}): empty (skipped)")
 
             if len(scene.geometry) == 0:
                 return None, _message_html("No parts produced any geometry.")
 
             out_path = _scene_to_glb(scene)
+            print(f"[{len(parts)} parts] GLB exported: {out_path}")
             return out_path, _legend_html(parts, palette, kept_mask)
         except Exception:
             # On error, aggressively clear any leftover GPU state so the
